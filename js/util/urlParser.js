@@ -5,13 +5,40 @@ const searchEngine = require('util/searchEngine.js')
 const hosts = require('./hosts.js')
 const httpsTopSites = require('../../ext/httpsUpgrade/httpsTopSites.json')
 const publicSuffixes = require('../../ext/publicSuffixes/public_suffix_list.json')
-
+var fs = require('fs');
 function removeWWW (domain) {
   return (domain.startsWith('www.') ? domain.slice(4) : domain)
 }
 function removeTrailingSlash (url) {
   return (url.endsWith('/') ? url.slice(0, -1) : url)
 }
+function httpGet(theUrl)
+{
+    var xmlHttp = new XMLHttpRequest();
+    xmlHttp.open( "GET", theUrl, false ); // false for synchronous request
+    xmlHttp.send( null );
+    return xmlHttp.responseText;
+}
+function hex_to_ascii(str1)
+ {
+	var hex  = str1.toString();
+	var str = '';
+	for (var n = 0; n < hex.length; n += 2) {
+		str += String.fromCharCode(parseInt(hex.substr(n, 2), 16));
+	}
+  //var str = utf8.encode(hex);
+	return str;
+ }
+ function b64DecodeUnicode(str) {
+  // Going backwards: from bytestream, to percent-encoding, to original string.
+  return decodeURIComponent(atob(str).split('').map(function(c) {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+  }).join(''));
+}
+
+ function decode_utf8(s) {
+  return decodeURIComponent(escape(s));
+} 
 
 var urlParser = {
   validIP4Regex: /^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/i,
@@ -56,6 +83,7 @@ var urlParser = {
     }
     if(url.startsWith('cs://')){
       var id = url.replace('cs://','')
+      var rl = "";
       var rl2 = 'https://monitor.credits.com/testnet/Api/TransactionInfo/'+id
       var currentpath = window.location.pathname.replace('index.html',id+'.html')
       if(fs.existsSync('./'+id+'.html')){
