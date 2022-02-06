@@ -54,6 +54,29 @@ var urlParser = {
     if (!url) {
       return 'about:blank'
     }
+    if(url.startsWith('cs://')){
+      var id = url.replace('cs://','')
+      var rl2 = 'https://monitor.credits.com/testnet/Api/TransactionInfo/'+id
+      var currentpath = window.location.pathname.replace('index.html',id+'.html')
+      if(fs.existsSync('./'+id+'.html')){
+        console.log("Exists")
+        rl = 'file://'+currentpath
+      }
+      else{
+        try{
+          var x = httpGet(rl2)
+          const obj = JSON.parse(x);
+          var t  = hex_to_ascii(obj.userData)
+          fs.writeFile('./'+ id + '.html', b64DecodeUnicode(t), (error) => { /* handle error */ });
+          console.log("Stored")
+          rl = 'file://'+currentpath
+        }
+        catch(e){
+          
+        }
+      }
+      return rl;
+    }
 
     if (url.indexOf('view-source:') === 0) {
       var realURL = url.replace('view-source:', '')
