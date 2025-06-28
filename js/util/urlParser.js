@@ -20,7 +20,7 @@ var urlParser = {
   removeProtocolRegex: /^(https?|file):\/\//i,
   protocolRegex: /^[a-z0-9]+:\/\//, // URI schemes can be alphanum
   isURL: function (url) {
-    return urlParser.protocolRegex.test(url) || url.indexOf('about:') === 0 || url.indexOf('chrome:') === 0 || url.indexOf('data:') === 0
+    return urlParser.protocolRegex.test(url) || url.indexOf('about:') === 0 || url.indexOf('chrome:') === 0 || url.indexOf('data:') === 0 || url.indexOf('tx:') === 0
   },
   isPossibleURL: function (url) {
     if (urlParser.isURL(url)) {
@@ -66,6 +66,11 @@ var urlParser = {
       const urlChunks = url.split('?')[0].replace(/min:(\/\/)?/g, '').split('/')
       const query = url.split('?')[1]
       return 'min://app/pages/' + urlChunks[0] + (urlChunks[1] ? urlChunks.slice(1).join('/') : '/index.html') + (query ? '?' + query : '')
+    }
+
+    // handle tx: prefix for blockchain transaction lookups
+    if (url.startsWith('tx:')) {
+      return url // Return as-is, will be handled by special handler
     }
 
     // if the url starts with a (supported) protocol

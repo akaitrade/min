@@ -29,7 +29,43 @@ function captureCurrentTab (options) {
 
 // called whenever a new page starts loading, or an in-page navigation occurs
 function onPageURLChange (tab, url) {
-  if (url.indexOf('https://') === 0 || url.indexOf('about:') === 0 || url.indexOf('chrome:') === 0 || url.indexOf('file://') === 0 || url.indexOf('min://') === 0) {
+  // Check if this is a blockchain content URL that should be displayed as tx:
+  if (url.startsWith('http://localhost:38429/')) {
+    // Extract the content ID and try to map it back to original URL
+    const contentMatch = url.match(/http:\/\/localhost:38429\/(tx-\d+-\d+)/)
+    if (contentMatch) {
+      const contentId = contentMatch[1]
+      // Try to get the original blockchain URL synchronously first
+      ipc.invoke('getBlockchainURL', url).then(originalUrl => {
+        if (originalUrl) {
+          console.log('Mapping localhost URL to original:', url, '->', originalUrl)
+          // Update with the original tx: URL for display
+          tabs.update(tab, {
+            secure: true,
+            url: originalUrl
+          })
+        } else {
+          console.log('No mapping found for:', url)
+          // Fallback to normal URL handling
+          updateTabWithNormalURL(tab, url)
+        }
+      }).catch(err => {
+        console.error('Error getting blockchain URL:', err)
+        // Fallback to normal URL handling if mapping fails
+        updateTabWithNormalURL(tab, url)
+      })
+    } else {
+      updateTabWithNormalURL(tab, url)
+    }
+  } else {
+    updateTabWithNormalURL(tab, url)
+  }
+
+  webviews.callAsync(tab, 'setVisualZoomLevelLimits', [1, 3])
+}
+
+function updateTabWithNormalURL(tab, url) {
+  if (url.indexOf('https://') === 0 || url.indexOf('about:') === 0 || url.indexOf('chrome:') === 0 || url.indexOf('file://') === 0 || url.indexOf('min://') === 0 || url.indexOf('tx:') === 0) {
     tabs.update(tab, {
       secure: true,
       url: url
@@ -40,8 +76,6 @@ function onPageURLChange (tab, url) {
       url: url
     })
   }
-
-  webviews.callAsync(tab, 'setVisualZoomLevelLimits', [1, 3])
 }
 
 // called whenever a navigation finishes

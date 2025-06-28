@@ -3,6 +3,297 @@ var viewStateMap = {} // id: view state
 
 var temporaryPopupViews = {} // id: view
 
+// Blockchain resolver for tx: URLs
+const WebSocket = require('ws')
+const zlib = require('zlib')
+const fileSystem = require('fs')
+const pathUtil = require('path')
+const os = require('os')
+const http = require('http')
+
+// Create a simple HTTP server for serving blockchain content
+let blockchainContentServer = null
+let serverPort = 38429 // Use a specific port for blockchain content
+
+function startBlockchainContentServer() {
+  if (blockchainContentServer) {
+    return Promise.resolve(serverPort)
+  }
+  
+  return new Promise((resolve, reject) => {
+    blockchainContentServer = http.createServer((req, res) => {
+      console.log('HTTP request received:', req.method, req.url)
+      console.log('Available content keys:', Object.keys(blockchainContentStore))
+      
+      // Enable CORS and proper headers
+      res.setHeader('Access-Control-Allow-Origin', '*')
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+      res.setHeader('Content-Security-Policy', "default-src 'self' 'unsafe-inline' 'unsafe-eval' ws: wss: data:")
+      
+      if (req.method === 'OPTIONS') {
+        res.writeHead(200)
+        res.end()
+        return
+      }
+      
+      // Serve stored content based on URL path
+      const urlPath = req.url.slice(1) // Remove leading slash
+      console.log('Looking for content with key:', urlPath)
+      const content = blockchainContentStore[urlPath]
+      
+      if (content) {
+        console.log('Content found, length:', content.length)
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.writeHead(200)
+        res.end(content)
+      } else {
+        console.log('Content not found for key:', urlPath)
+        res.writeHead(404)
+        res.end('Content not found')
+      }
+    })
+    
+    blockchainContentServer.listen(serverPort, 'localhost', (err) => {
+      if (err) {
+        reject(err)
+      } else {
+        console.log(`Blockchain content server started on http://localhost:${serverPort}`)
+        resolve(serverPort)
+      }
+    })
+  })
+}
+
+// Store for blockchain content
+const blockchainContentStore = {}
+
+// Track original blockchain URLs for display purposes
+const blockchainURLMapping = {} // maps localhost URLs to original tx: URLs
+
+const blockchainResolver = {
+  defaultNode: 'ws://109.199.97.4:9095/',
+  
+  parseTransactionID: function (url) {
+    if (!url.startsWith('tx:')) {
+      return null
+    }
+    
+    const txPart = url.slice(3)
+    const [txId, index] = txPart.split('.')
+    
+    return {
+      txId: txId,
+      index: index ? parseInt(index, 10) : 0
+    }
+  },
+  
+  getTransaction: function (txId, index = 0, nodeUrl = null) {
+    return new Promise((resolve, reject) => {
+      const wsUrl = nodeUrl || blockchainResolver.defaultNode
+      const ws = new WebSocket(wsUrl)
+      
+      const timeout = setTimeout(() => {
+        ws.close()
+        reject(new Error('Request timeout'))
+      }, 10000)
+      
+      ws.on('open', () => {
+        const request = {
+          id: 'req-1',
+          type: 3,
+          data: {
+            poolSeq: parseInt(txId),
+            index: index
+          }
+        }
+        
+        ws.send(JSON.stringify(request))
+      })
+      
+      ws.on('message', (data) => {
+        clearTimeout(timeout)
+        try {
+          const response = JSON.parse(data.toString())
+          ws.close()
+          
+          if (response.data && response.data.found) {
+            resolve(response.data)
+          } else {
+            reject(new Error('Transaction not found'))
+          }
+        } catch (error) {
+          reject(new Error('Invalid response format'))
+        }
+      })
+      
+      ws.on('error', (error) => {
+        clearTimeout(timeout)
+        reject(error)
+      })
+    })
+  },
+  
+  decodeUserFields: function (userFields) {
+    try {
+      if (!userFields || userFields === '') {
+        return null
+      }
+      
+      const base64Decoded = Buffer.from(userFields, 'base64')
+      const zlibDecompressed = zlib.inflateSync(base64Decoded)
+      return zlibDecompressed.toString('utf8')
+    } catch (error) {
+      throw new Error('Failed to decode userFields: ' + error.message)
+    }
+  },
+  
+  createHTMLPage: function (htmlContent, txId, index) {
+    // Don't remove scripts for blockchain content - we want full functionality
+    // Just add our blockchain header if the content doesn't already have proper structure
+    if (htmlContent.includes('<!DOCTYPE html>') && htmlContent.includes('<html')) {
+      // Content already has full HTML structure, return as-is but add base tag for relative URLs
+      return htmlContent.replace('<head>', `<head>
+        <base href="http://localhost:38429/">
+        <meta name="blockchain-tx-id" content="${txId}">
+        <meta name="blockchain-tx-index" content="${index}">`)
+    } else {
+      // Wrap content in basic HTML structure
+      return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Blockchain Content - tx:${txId}.${index}</title>
+    <base href="http://localhost:38429/">
+    <meta name="blockchain-tx-id" content="${txId}">
+    <meta name="blockchain-tx-index" content="${index}">
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background-color: #f5f5f5; 
+        }
+        .blockchain-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 20px;
+            margin: -20px -20px 20px -20px;
+            border-radius: 0 0 8px 8px;
+        }
+        .blockchain-info {
+            font-size: 14px;
+            opacity: 0.9;
+            margin-top: 5px;
+        }
+        .content-container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="blockchain-header">
+        <h2>📋 Blockchain Content</h2>
+        <div class="blockchain-info">
+            Transaction ID: ${txId} | Index: ${index}
+        </div>
+    </div>
+    <div class="content-container">
+        ${htmlContent}
+    </div>
+</body>
+</html>`
+    }
+  },
+  
+  resolveTransaction: async function (url) {
+    try {
+      const parsed = blockchainResolver.parseTransactionID(url)
+      if (!parsed) {
+        throw new Error('Invalid transaction URL format')
+      }
+      
+      const txData = await blockchainResolver.getTransaction(parsed.txId, parsed.index)
+      
+      if (!txData.userFields) {
+        throw new Error('No user data found in transaction')
+      }
+      
+      const htmlContent = blockchainResolver.decodeUserFields(txData.userFields)
+      if (!htmlContent) {
+        throw new Error('Could not decode user data')
+      }
+      
+      return blockchainResolver.createHTMLPage(htmlContent, parsed.txId, parsed.index)
+    } catch (error) {
+      return blockchainResolver.createErrorPage(error.message, url)
+    }
+  },
+  
+  createErrorPage: function (errorMessage, url) {
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Blockchain Resolution Error</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background-color: #f5f5f5; 
+        }
+        .error-container {
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 600px;
+            margin: 50px auto;
+        }
+        .error-icon {
+            font-size: 48px;
+            color: #e74c3c;
+            margin-bottom: 20px;
+        }
+        .error-title {
+            color: #e74c3c;
+            font-size: 24px;
+            margin-bottom: 15px;
+        }
+        .error-message {
+            color: #666;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        .error-url {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            word-break: break-all;
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="error-icon">⚠️</div>
+        <h2 class="error-title">Unable to Resolve Blockchain Content</h2>
+        <p class="error-message">${errorMessage}</p>
+        <div class="error-url">${url}</div>
+    </div>
+</body>
+</html>`
+  }
+}
+
 // rate limit on "open in app" requests
 var globalLaunchRequests = 0
 
@@ -16,7 +307,7 @@ function getDefaultViewWebPreferences () {
       safeDialogsMessage: 'Prevent this page from creating additional dialogs',
       preload: __dirname + '/dist/preload.js',
       contextIsolation: true,
-      sandbox: true,
+      sandbox: false,  // Disable sandbox for blockchain content
       enableRemoteModule: false,
       allowPopups: false,
       // partition: partition || 'persist:webcontent',
@@ -24,7 +315,8 @@ function getDefaultViewWebPreferences () {
       autoplayPolicy: (settings.get('enableAutoplay') ? 'no-user-gesture-required' : 'user-gesture-required'),
       // match Chrome's default for anti-fingerprinting purposes (Electron defaults to 0)
       minimumFontSize: 6,
-      javascript: !(settings.get('filtering')?.contentTypes?.includes('script'))
+      javascript: !(settings.get('filtering')?.contentTypes?.includes('script')),
+      webSecurity: false  // Disable web security for blockchain content
     }
   )
 }
@@ -175,7 +467,7 @@ function createView (existingViewId, id, webPreferences, boundsString, events) {
   // show an "open in app" prompt for external protocols
 
   function handleExternalProtocol (e, url, isInPlace, isMainFrame, frameProcessId, frameRoutingId) {
-    var knownProtocols = ['http', 'https', 'file', 'min', 'about', 'data', 'javascript', 'chrome'] // TODO anything else?
+    var knownProtocols = ['http', 'https', 'file', 'min', 'about', 'data', 'javascript', 'chrome', 'tx'] // TODO anything else?
     if (!knownProtocols.includes(url.split(':')[0])) {
       var externalApp = app.getApplicationNameForProtocol(url)
       if (externalApp) {
@@ -375,13 +667,114 @@ function loadURLInView (id, url, win) {
       win.getContentView().addChildView(viewMap[id])
     }
   }
-  viewMap[id].webContents.loadURL(url)
+  
+  // Handle blockchain transaction URLs
+  if (url.startsWith('tx:')) {
+    console.log('Handling blockchain URL:', url)
+    
+    blockchainResolver.resolveTransaction(url).then(htmlContent => {
+      console.log('Blockchain content resolved, length:', htmlContent.length)
+      
+      startBlockchainContentServer().then(port => {
+        // Store content in server and load via HTTP
+        const contentId = `tx-${id}-${Date.now()}`
+        blockchainContentStore[contentId] = htmlContent
+        
+        console.log('Stored content with ID:', contentId)
+        console.log('Available content IDs:', Object.keys(blockchainContentStore))
+        
+        // Load via HTTP server to allow WebSocket connections
+        const httpUrl = `http://localhost:${port}/${contentId}`
+        console.log('Loading URL:', httpUrl)
+        
+        // Store mapping for URL display
+        blockchainURLMapping[httpUrl] = url
+        blockchainURLMapping[`http://localhost:${port}/${contentId}`] = url
+        
+        viewMap[id].webContents.loadURL(httpUrl)
+        
+        // Immediately update the tab URL to show the original tx: URL
+        setTimeout(() => {
+          const win = windows.windowFromContents(viewMap[id].webContents)?.win
+          if (win) {
+            win.webContents.send('view-event', {
+              tabId: id,
+              event: 'did-navigate',
+              args: [url, false, true] // original tx: URL, not in place, main frame
+            })
+          }
+        }, 100)
+        
+        // Clean up stored content after a delay
+        setTimeout(() => {
+          delete blockchainContentStore[contentId]
+          // Clean up URL mapping too
+          delete blockchainURLMapping[httpUrl]
+          delete blockchainURLMapping[`http://localhost:${port}/${contentId}`]
+          console.log('Cleaned up content:', contentId)
+        }, 300000) // 5 minutes
+      }).catch(serverError => {
+        console.error('Failed to start content server:', serverError)
+        viewMap[id].webContents.loadURL('about:blank')
+      })
+    }).catch(error => {
+      console.error('Blockchain resolution error:', error)
+      
+      startBlockchainContentServer().then(port => {
+        const errorHTML = blockchainResolver.createErrorPage(error.message, url)
+        const contentId = `tx-error-${id}-${Date.now()}`
+        blockchainContentStore[contentId] = errorHTML
+        
+        console.log('Stored error content with ID:', contentId)
+        
+        const httpUrl = `http://localhost:${port}/${contentId}`
+        
+        // Store mapping for URL display
+        blockchainURLMapping[httpUrl] = url
+        
+        viewMap[id].webContents.loadURL(httpUrl)
+        
+        // Immediately update the tab URL to show the original tx: URL
+        setTimeout(() => {
+          const win = windows.windowFromContents(viewMap[id].webContents)?.win
+          if (win) {
+            win.webContents.send('view-event', {
+              tabId: id,
+              event: 'did-navigate',
+              args: [url, false, true] // original tx: URL, not in place, main frame
+            })
+          }
+        }, 100)
+        
+        setTimeout(() => {
+          delete blockchainContentStore[contentId]
+          // Clean up URL mapping too
+          delete blockchainURLMapping[httpUrl]
+        }, 300000)
+      }).catch(serverError => {
+        console.error('Failed to start content server:', serverError)
+        viewMap[id].webContents.loadURL('about:blank')
+      })
+    })
+  } else {
+    viewMap[id].webContents.loadURL(url)
+  }
+  
   viewStateMap[id].loadedInitialURL = true
 }
 
 ipc.on('loadURLInView', function (e, args) {
   const win = windows.windowFromContents(e.sender)?.win
   loadURLInView(args.id, args.url, win)
+})
+
+// Handle requests for original blockchain URLs
+ipc.handle('getBlockchainURL', function (e, httpUrl) {
+  console.log('IPC getBlockchainURL called with:', httpUrl)
+  console.log('Available mappings:', Object.keys(blockchainURLMapping))
+  const result = blockchainURLMapping[httpUrl] || null
+  console.log('Returning mapping result:', result)
+  return result
 })
 
 ipc.on('callViewMethod', function (e, data) {
